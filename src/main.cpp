@@ -20,16 +20,16 @@
 */
 
 #include <Arduino.h>
-#include <HardwareTimer.h>
 
 // 1800 = 40Khz, 3000 = 24Khz
 #define PWM_OVERFLOW 1800
-#define PWM_OUT PA8
+#define PWM_OUT PA8       // PWM output
+#define PWM_OUT_COMP PB13 // complementary output
 #define ANALOG_PIN PA7
 #define ADC_MAX_VALUE 4095U
 #define PWM_MIDPOINT (PWM_OVERFLOW / 2U)
 
-HardwareTimer pwmTimer(TIM1);
+HardwareTimer hTimer1 = HardwareTimer(1);
 volatile uint16_t latestSample = 0;
 uint8_t count = 0;
 
@@ -42,21 +42,32 @@ uint8_t  sine_wave[16] = {
 
 void setup() {
   pinMode(ANALOG_PIN, INPUT_ANALOG);
+  pinMode(PWM_OUT, PWM);
+  pinMode(PWM_OUT_COMP, PWM);
   pinMode(PC13, OUTPUT);
-  analogReadResolution(12);
 
  /*
-  * Generate a 40 kHz PWM carrier on TIM1/CH1 (PA8). The timer update ISR
-  * runs once per carrier period, samples PA7, and offsets the duty cycle
-  * around 50% to perform amplitude modulation.
+  * Maple-core TIM1 setup:
+  * - PWM is emitted on PA8 via pwmWrite()
+  * - channel 4 compare generates the carrier-rate interrupt
   */
-  pwmTimer.pause();
-  pwmTimer.setMode(1, TIMER_OUTPUT_COMPARE_PWM1, PWM_OUT);
-  pwmTimer.setOverflow(PWM_OVERFLOW, TICK_FORMAT);
-  pwmTimer.setCaptureCompare(1, PWM_MIDPOINT, TICK_COMPARE_FORMAT);
-  pwmTimer.attachInterrupt(isr);
-  pwmTimer.refresh();
-  pwmTimer.resume();
+  hTimer1.pause();
+  hTimer1.setPrescaleFactor(1);
+  hTimer1.setOverflow(PWM_OVERFLOW);
+  hTimer1.setMode(4, TIMER_OUTPUT_COMPARE);
+  hTimer1.setCompare(4, PWM_OVERFLOW);
+  hTimer1.attachInterrupt(4, isr);
+
+  timer_dev *t = TIMER1;
+  timer_reg_map r = t->regs;
+
+  // Enable TIM1 complementary output so PB13 mirrors the PA8 drive stage.
+  bitSet(r.adv->CCER, 0);
+  bitSet(r.adv->CCER, 2);
+
+  hTimer1.refresh();
+  hTimer1.resume();
+  pwmWrite(PWM_OUT, PWM_MIDPOINT);
 }
 
 void loop() {
@@ -74,7 +85,7 @@ void loop() {
 void isr(void) {
   latestSample = analogRead(ANALOG_PIN);
   const uint16_t pDuty = (latestSample * (PWM_MIDPOINT - 1U)) / ADC_MAX_VALUE;
-  pwmTimer.setCaptureCompare(1, PWM_MIDPOINT + pDuty, TICK_COMPARE_FORMAT);
+  pwmWrite(PWM_OUT, PWM_MIDPOINT + pDuty);
 
   // alternate modulation #2 - louder but worse quality
   //uint16_t pDuty = (uint16_t)map(buffer[0],0,4095,0,PWM_OVERFLOW);
